@@ -1,0 +1,270 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webcam Image Capture</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            text-align: center;
+        }
+        video, canvas {
+            border: 2px solid #333;
+            margin: 10px;
+            max-width: 100%;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .error, .info {
+            margin: 10px;
+            max-width: 600px;
+        }
+        .error { color: red; }
+        .info { color: #333; }
+        a {
+            margin: 10px;
+            padding: 10px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            display: none;
+        }
+        a:hover {
+            background-color: #218838;
+        }
+        .settings-link {
+            color: #007bff;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>Webcam Image Capture</h1>
+    <div id="info" class="info"></div>
+    <div id="error" class="error"></div>
+    <video id="video" width="640" height="480" autoplay playsinline></video>
+    <button id="capture" disabled>Capture Image</button>
+    <button id="retry" style="display: none;">Retry Webcam Access</button>
+    <button id="settings" style="display: none;">Open Chrome Camera Settings</button>
+    <canvas id="canvas" width="640" height="480"></canvas>
+    <a id="download">Download Captured Image</a>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const captureButton = document.getElementById('capture');
+        const retryButton = document.getElementById('retry');
+        const settingsButton = document.getElementById('settings');
+        const downloadLink = document.getElementById('download');
+        const errorDiv = document.getElementById('error');
+        const infoDiv = document.getElementById('info');
+        const context = canvas.getContext('2d');
+
+        // Display messages
+        function showError(message) {
+            errorDiv.innerHTML = message;
+            captureButton.disabled = true;
+            retryButton.style.display = 'inline-block';
+            settingsButton.style.display = 'inline-block';
+        }
+
+        function showInfo(message) {
+            infoDiv.textContent = message;
+        }
+
+        function clearError() {
+            errorDiv.textContent = '';
+            retryButton.style.display = 'none';
+            settingsButton.style.display = 'none';
+        }
+
+        // Log diagnostics
+        function logDiagnostics() {
+            const diagnostics = {
+                isSecureContext: window.isSecureContext,
+                mediaDevicesSupported: !!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia,
+                userAgent: navigator.userAgent,
+                location: window.location.href
+            };
+            console.log('Diagnostics:', diagnostics);
+            showInfo(`Browser: ${navigator.userAgent.split(' ').slice(-2).join(' ')} | Secure Context: ${window.isSecureContext ? 'Yes' : 'No'} | MediaDevices: ${diagnostics.mediaDevicesSupported ? 'Supported' : 'Not Supported'}`);
+            return diagnostics;
+        }
+
+        // Check webcam permission status
+        async function checkPermission() {
+            try {
+                if (navigator.permissions && navigator.permissions.query) {
+                    const permission = await navigator.permissions.query({ name: 'camera' });
+                    console.log('Camera permission status:', permission.state);
+                    if (permission.state === 'denied') {
+                        showError('Camera access is denied. Please enable camera permissions in your <a href="#" class="settings-link" onclick="openSettings()">browser settings</a> and retry.');
+                        return false;
+                    }
+                    if (permission.state === 'prompt') {
+                        showInfo('Please allow camera access when prompted.');
+                    }
+                    return true;
+                }
+            } catch (err) {
+                console.warn('Permission check failed:', err);
+            }
+            return true;
+        }
+
+        // Check for available video devices
+        async function checkVideoDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                console.log('Available video devices:', videoDevices);
+                if (videoDevices.length === 0) {
+                    showError('No webcam found. Please connect a webcam and retry.');
+                    return false;
+                }
+                return true;
+            } catch (err) {
+                showError('Error checking devices: ' + err.message);
+                console.error('Device enumeration error:', err);
+                return false;
+            }
+        }
+
+        // Access webcam
+        async function startWebcam() {
+            clearError();
+            try {
+                const diagnostics = logDiagnostics();
+                if (!diagnostics.isSecureContext) {
+                    showError('This app requires HTTPS or localhost. Please access via a secure URL.');
+                    return;
+                }
+                if (!diagnostics.mediaDevicesSupported) {
+                    showError('Your browser does not support webcam access. Please use Chrome, Firefox, or Edge.');
+                    return;
+                }
+
+                const hasPermission = await checkPermission();
+                if (!hasPermission) return;
+
+                const hasVideoDevices = await checkVideoDevices();
+                if (!hasVideoDevices) return;
+
+                // Use navigator.mediaDevices.getUserMedia as requested
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                captureButton.disabled = false;
+                showInfo('Webcam connected successfully.');
+            } catch (err) {
+                console.error('Webcam error details:', {
+                    name: err.name,
+                    message: err.message,
+                    stack: err.stack,
+                    location: window.location.href
+                });
+                if (err.name === 'NotAllowedError') {
+                    showError('Camera access is denied. Please enable camera permissions in your <a href="#" class="settings-link" onclick="openSettings()">browser settings</a> and retry.');
+                } else if (err.name === 'NotFoundError') {
+                    showError('No webcam found. Please connect a webcam and retry.');
+                } else if (err.name === 'NotReadableError') {
+                    showError('Webcam is in use by another app. Please close other apps and retry.');
+                } else if (err.name === 'SecurityError') {
+                    showError('Webcam access blocked due to security settings. Ensure the site is on HTTPS and permissions are allowed.');
+                } else {
+                    showError(`Webcam error: ${err.name} - ${err.message}. Please check your browser settings and retry.`);
+                }
+            }
+        }
+
+        // Open Chrome settings
+        function openSettings() {
+            window.open('chrome://settings/content/camera', '_blank');
+        }
+
+        // Capture image from video
+        captureButton.addEventListener('click', () => {
+            try {
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataUrl = canvas.toDataURL('image/png');
+                downloadLink.href = dataUrl;
+                downloadLink.download = `captured_image_${new Date().toISOString()}.png`;
+                downloadLink.style.display = 'inline-block';
+            } catch (err) {
+                showError('Error capturing image: ' + err.message);
+                console.error('Capture error:', err);
+            }
+        });
+
+        // Event listeners
+        retryButton.addEventListener('click', startWebcam);
+        settingsButton.addEventListener('click', openSettings);
+
+        // Start webcam when page loads
+        window.onload = startWebcam;
+    </script>
+</body>
+</html>
